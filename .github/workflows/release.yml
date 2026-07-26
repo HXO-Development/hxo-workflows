@@ -1,17 +1,16 @@
 name: Release
-on:
-  push:
-    branches:
-      - main
-      - dev
-  workflow_dispatch:
+   on:
+     push:
+       branches:
+         - main
+         - dev
+     workflow_dispatch:
 
-jobs:
-  build:
-    uses: HXO-Development/hxo-workflows/.github/workflows/build-publish-release-gradle.yml@v1
-    with:
-      java-version: "21"
-      runner: self-hosted
-      maven-publish: false        
-      modules: "hxo-lobby-*-all.jar"
-    secrets: inherit
+   jobs:
+     build:
+       uses: HXO-Development/hxo-workflows/.github/workflows/build-publish-release-gradle.yml@v1
+       with:
+         java-version: "21"
+         runner: self-hosted
+         modules: "hxo-lobby-*-all.jar"
+       secrets: inherit
