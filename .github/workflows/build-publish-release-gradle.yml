@@ -50,7 +50,7 @@ permissions:
 jobs:
   build_publish_release:
     name: Build, Publish and Release
-    runs-on: ${{ inputs.runner }}
+    runs-on: self-hosted
 
     steps:
       - name: Repository auschecken
