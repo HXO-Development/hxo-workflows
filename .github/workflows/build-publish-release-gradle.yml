@@ -1,0 +1,147 @@
+name: Build, Publish and Release Gradle Modules
+
+# Dieser Workflow laeuft nie von allein - er wird von anderen Repos aufgerufen.
+on:
+  workflow_call:
+    inputs:
+      java-version:
+        type: string
+        required: false
+        default: "21"
+        description: "Java-Version fuer den Gradle-Build."
+      runner:
+        type: string
+        required: false
+        default: "ubuntu-latest"
+        description: "Runner-Label, z.B. ubuntu-latest oder self-hosted."
+      gradle-task:
+        type: string
+        required: false
+        default: "shadowJar"
+        description: "Gradle-Task zum Bauen der JARs."
+      maven-publish:
+        type: boolean
+        required: false
+        default: true
+        description: "Ob nach dem Build alle Maven-Publications veroeffentlicht werden."
+      modules:
+        type: string
+        required: false
+        default: ""
+        description: "Semikolon-getrennte JAR-Patterns fuers Release. Beispiel: 'hxo-core-paper-*-all.jar;hxo-core-velocity-*-all.jar'. Leer = Release ohne Assets."
+    secrets:
+      REPOSILITE_USERNAME:
+        required: true
+        description: "User fuer das Reposilite-Deployment."
+      REPOSILITE_PASSWORD:
+        required: true
+        description: "Passwort/Token fuer das Reposilite-Deployment."
+
+env:
+  DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+  # Diese Namen muessen exakt zu den System.getenv(...) in deiner build.gradle.kts passen
+  REPOSILITE_USERNAME: ${{ secrets.REPOSILITE_USERNAME }}
+  REPOSILITE_PASSWORD: ${{ secrets.REPOSILITE_PASSWORD }}
+
+permissions:
+  contents: write   # noetig fuer das Erstellen des Releases
+  actions: read
+
+jobs:
+  build_publish_release:
+    name: Build, Publish and Release
+    runs-on: ${{ inputs.runner }}
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0   # volle History, sonst funktionieren Release-Notes nicht
+
+      - name: JDK einrichten
+        uses: actions/setup-java@v5
+        with:
+          distribution: "temurin"
+          java-version: ${{ inputs.java-version }}
+
+      - name: Gradle einrichten
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          allow-snapshot-wrappers: true
+
+      - name: gradlew ausfuehrbar machen
+        run: chmod +x ./gradlew
+
+      - name: Module bauen
+        run: ./gradlew ${{ inputs.gradle-task }} --parallel --no-scan --stacktrace
+
+      - name: Maven-Artefakte veroeffentlichen
+        if: ${{ inputs.maven-publish }}
+        run: ./gradlew publish --parallel --no-scan --stacktrace
+
+      - name: Version auslesen
+        shell: bash
+        run: |
+          VERSION=$(./gradlew properties --quiet --no-scan | awk '/^version:/ { print $2; exit }')
+
+          if [ -z "$VERSION" ]; then
+            echo "Konnte die Projekt-Version nicht aus den Gradle-Properties lesen." >&2
+            exit 1
+          fi
+
+          if [[ "$VERSION" == *SNAPSHOT* ]]; then
+            echo "PRERELEASE=true"   >> "$GITHUB_ENV"
+            echo "MAKE_LATEST=false" >> "$GITHUB_ENV"
+          else
+            echo "PRERELEASE=false" >> "$GITHUB_ENV"
+            if [ "$GITHUB_REF_NAME" = "$DEFAULT_BRANCH" ]; then
+              echo "MAKE_LATEST=true" >> "$GITHUB_ENV"
+            else
+              echo "MAKE_LATEST=false" >> "$GITHUB_ENV"
+            fi
+          fi
+
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Gebaute Version: $VERSION"
+
+      - name: Release-JARs einsammeln
+        if: ${{ inputs.modules != '' }}
+        shell: bash
+        env:
+          MODULES: ${{ inputs.modules }}   # ueber env statt direkter Interpolation -> keine Shell-Injection
+        run: |
+          {
+            echo "JAR_FILES<<EOF"
+            IFS=';' read -ra PATTERNS <<< "$MODULES"
+            for pattern in "${PATTERNS[@]}"; do
+              pattern="$(echo "$pattern" | xargs)"
+              if [ -n "$pattern" ]; then
+                find . -path "*/build/libs/$pattern" -type f
+              fi
+            done | sort -u
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Release-JARs pruefen
+        if: ${{ inputs.modules != '' }}
+        shell: bash
+        run: |
+          if [ -z "$JAR_FILES" ]; then
+            echo "Keine JARs gefunden fuer die konfigurierten Patterns." >&2
+            exit 1
+          fi
+          echo "Release-JARs:"
+          echo "$JAR_FILES"
+
+      - name: GitHub Release erstellen
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: Release ${{ env.VERSION }}
+          draft: false
+          prerelease: ${{ env.PRERELEASE }}
+          make_latest: ${{ env.MAKE_LATEST }}
+          files: ${{ env.JAR_FILES }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
